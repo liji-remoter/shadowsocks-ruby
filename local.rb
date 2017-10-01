@@ -50,7 +50,7 @@ handle_tcp =
       r, w, e = IO.select(fdset, [], [])
 
       if r.include?(local_connection)
-        recv_data = local_connection.recv(package_size)
+        recv_data = local_connection.recvmsg.first
         if counter == 1
           begin
             addr = recv_data[5..-3]
@@ -60,27 +60,25 @@ handle_tcp =
           end
         end
         counter += 1 if counter < 2
-        break if remote_connection.send(encrypt_data.call(recv_data), 0) <= 0
+        break if remote_connection.sendmsg(encrypt_data.call(recv_data)) <= 0
       end
 
       if r.include?(remote_connection)
-        data_length = remote_connection.recv(2).unpack("H*").first.hex
-        puts "data_length: #{data_length}"
+        data_length = remote_connection.recvmsg(2).first.unpack("H*").first.hex
         if data_length > 0
           remote_data = ""
           while (remote_data_length = remote_data.length) < data_length
             if remote_data_length == 0
-              remote_data += remote_connection.recv(data_length)
+              remote_data += remote_connection.recvmsg(data_length).first
             else
-              remote_data += remote_connection.recv(data_length - remote_data_length)
+              remote_data += remote_connection.recvmsg(data_length - remote_data_length).first
             end
           end
           remote_data = decrypt_data.call(remote_data)
-          puts "remote_data length: #{remote_data.length}"
         else
           remote_data = ""
         end
-        break if local_connection.send(remote_data, 0) <= 0
+        break if local_connection.sendmsg(remote_data) <= 0
       end
     end
   end

@@ -1,6 +1,7 @@
 require "socket"
 require "ipaddr"
 require "openssl"
+require "zlib"
 require "pry"
 
 # port = "my-server-port"
@@ -9,7 +10,7 @@ port = 8499
 server = "188.166.24.200"
 key = "625bd76ee1934ad1b53f22c8d0222738"
 iv = "c6f97771e3dfd066"
-package_size = 8192
+package_size = 4 * 1024
 
 encrypt_data =
   Proc.new do |plain_data|
@@ -46,21 +47,21 @@ handle_tcp =
       r, w, e = IO.select(fdset, [], [])
       if r.include?(sock)
         begin
-          data_length = sock.recv(2).unpack("H*").first.hex
+          data_length = sock.recvmsg(2).first.unpack("H*").first.hex
           if data_length > 0
             recv_data = ""
             while (recev_data_length = recv_data.length) < data_length
               if recev_data_length == 0
-                recv_data += sock.recv(data_length)
+                recv_data += sock.recvmsg(data_length).first
               else
-                recv_data += sock.recv(data_length - recev_data_length)
+                recv_data += sock.recvmsg(data_length - recev_data_length).first
               end
             end
             recv_data = decrypt_data.call(recv_data)
           else
             recv_data = ""
           end
-          if remote.send(recv_data, 0) <= 0
+          if remote.sendmsg(recv_data) <= 0
             break
           end
         rescue Exception => e
@@ -69,10 +70,8 @@ handle_tcp =
       end
       if r.include?(remote)
         begin
-          x = remote.recv(package_size)
-          puts "remote recv length: #{x.length}"
-          puts "encrypted remote recv length: #{encrypt_data.call(x).length}"
-          if sock.send(encrypt_data.call(x), 0) <= 0
+          x = remote.recvmsg(package_size).first
+          if sock.sendmsg(encrypt_data.call(x)) <= 0
             break
           end
         rescue Exception => e
@@ -84,10 +83,10 @@ handle_tcp =
 
 handle =
   Proc.new do |sock|
-    recv_data = sock.recv(package_size)
-    sock.send(encrypt_data.call("\x05\x00"), 0)
-    data_length = sock.recv(2).unpack("H*").first.hex
-    data = decrypt_data.call(sock.recv(data_length))
+    recv_data = sock.recvmsg
+    sock.sendmsg(encrypt_data.call("\x05\x00"))
+    data_length = sock.recvmsg(2).first.unpack("H*").first.hex
+    data = decrypt_data.call(sock.recvmsg(data_length).first)
     mode = data[1].unpack("H*").first.hex
     addrtype = data[3].unpack("H*").first.hex
     if addrtype == 1
@@ -116,7 +115,7 @@ handle =
     rescue Exception => e
       reply = "\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00"
     end
-    sock.send(encrypt_data.call(reply), 0)
+    sock.sendmsg(encrypt_data.call(reply))
     handle_tcp.call(sock, remote) if reply[1] == "\x00" && mode == 1
     remote.close
   end
@@ -125,8 +124,8 @@ server = TCPServer.new(server, port)
 
 loop do
   client = server.accept
-  Thread.new {
+  Thread.new do
     handle.call(client)
     client.close
-  }
+  end
 end
