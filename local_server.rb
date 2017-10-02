@@ -1,8 +1,6 @@
 require "socket"
 require "ipaddr"
 require "openssl"
-require "zlib"
-require "pry"
 
 local_server_ports = ["port-2", "port-2"]
 server_ip = "my-server-ip-address"
