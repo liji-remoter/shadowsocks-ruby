@@ -1,16 +1,14 @@
 require "socket"
 require "ipaddr"
 require "openssl"
-require "zlib"
-require "pry"
 
-# port = "my-server-port"
-# server = "my-server-ip-address"
-port = 8499
-server = "188.166.24.200"
-key = "625bd76ee1934ad1b53f22c8d0222738"
-iv = "c6f97771e3dfd066"
-package_size = 4 * 1024
+ports = ["my-server-port"]
+server = "my-server-ip-address" # This domain name was added into /etc/hosts on each server
+ports = (8499..8508).to_a       # Multiple processes support
+key = "625bd76ee1934ad1b53f22c8d0222738" # Openssl key
+iv = "c6f97771e3dfd066"                  # Openssl iv
+package_size = 4 * 1024                  # Data buffer size
+timeout = 5                              # Timeout
 
 encrypt_data =
   Proc.new do |plain_data|
@@ -44,7 +42,9 @@ handle_tcp =
   Proc.new do |sock, remote|
     fdset = [sock, remote]
     while true
-      r, w, e = IO.select(fdset, [], [])
+      r, w, e = IO.select(fdset, [], [], timeout)
+
+      break if r.nil?
       if r.include?(sock)
         begin
           data_length = sock.recvmsg(2).first.unpack("H*").first.hex
@@ -83,8 +83,6 @@ handle_tcp =
 
 handle =
   Proc.new do |sock|
-    recv_data = sock.recvmsg
-    sock.sendmsg(encrypt_data.call("\x05\x00"))
     data_length = sock.recvmsg(2).first.unpack("H*").first.hex
     data = decrypt_data.call(sock.recvmsg(data_length).first)
     mode = data[1].unpack("H*").first.hex
@@ -120,12 +118,15 @@ handle =
     remote.close
   end
 
-server = TCPServer.new(server, port)
-
-loop do
-  client = server.accept
-  Thread.new do
-    handle.call(client)
-    client.close
+ports.each do |port|
+  fork do
+    server = TCPServer.new(server, port)
+    loop do
+      client = server.accept
+      thr = Thread.new do
+        handle.call(client)
+        client.close
+      end
+    end
   end
 end

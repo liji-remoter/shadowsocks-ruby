@@ -1,18 +1,16 @@
 require "socket"
 require 'openssl'
-require 'pry'
+require 'geoip'
 
-# local_ip = 'my-local-ip-address'
-# local_port = 'my-local-port'
-# server_ip = 'my-server-ip-address'
-# server_port = 'my-server-port'
-local_ip = '127.0.0.1'
-local_port = 2000
-server_ip = '188.166.24.200'
-server_port = 8499
+local_ip = 'my-local-ip-address'
+local_port = 'my-local-port'
+server_ips = ['server-1', 'server-2']
+server_ports = ['server-port', 'server-port-2']
 key = "625bd76ee1934ad1b53f22c8d0222738"
 iv = "c6f97771e3dfd066"
-package_size = 8192
+timeout = 5
+skip_country = 'China'          # Skip the connection if the destination in China
+geoip = GeoIP.new('GeoIP.dat')  # fetch the country of the destination
 
 encrypt_data =
   Proc.new do |plain_data|
@@ -46,21 +44,54 @@ handle_tcp =
   Proc.new do |local_connection, remote_connection|
     fdset = [local_connection, remote_connection]
     counter = 0
+    current_country = nil
+    current_country_connection = nil
     while true
-      r, w, e = IO.select(fdset, [], [])
+      r, w, e = IO.select(fdset, [], [], timeout)
 
+      break if r.nil?
       if r.include?(local_connection)
+        if counter == 0
+          local_connection.recvmsg
+          local_connection.sendmsg("\x05\x00")
+          counter += 1 if counter < 2
+          next
+        end
         recv_data = local_connection.recvmsg.first
+
         if counter == 1
           begin
             addr = recv_data[5..-3]
-            puts "Connecting #{addr}"
+            port = recv_data[-2,2].unpack("H*").first.hex
+            current_country = geoip.country(addr).country_name
+            puts "Connecting #{addr} #{port}"
+            if current_country == skip_country
+              current_country_connection = TCPSocket.new(local_ip, server_ports.sample)
+              fdset << current_country_connection
+            end
           rescue Exception => e
-            nil
+            puts e.backtrace
           end
         end
         counter += 1 if counter < 2
-        break if remote_connection.sendmsg(encrypt_data.call(recv_data)) <= 0
+        begin
+          if current_country == skip_country
+            break if current_country_connection.sendmsg(recv_data) <= 0
+          else
+            break if remote_connection.sendmsg(encrypt_data.call(recv_data)) <= 0
+          end
+        rescue Exception => e
+          e.backtrace
+        end
+      end
+
+      if r.include?(current_country_connection)
+        revc_data = current_country_connection.recvmsg.first
+        if local_connection.sendmsg(revc_data) <= 0
+          current_country_connection.close
+          break
+        end
+        next
       end
 
       if r.include?(remote_connection)
@@ -84,16 +115,32 @@ handle_tcp =
   end
 
 server = TCPServer.new(local_ip, local_port)
-loop do
-  begin
-    remote_socket = TCPSocket.new(server_ip, server_port)
-    client = server.accept
-    Thread.new {
-      handle_tcp.call(client, remote_socket)
-      client.close
-      remote_socket.close
-    }
-  rescue Exception => e
-    puts e
+
+# Thread.start {
+#   load "local_server.rb"
+# }
+
+Process.spawn "ruby local_server.rb"
+
+server_ports.each do |server_port|
+  fork do
+    loop do
+      begin
+        remote_socket = TCPSocket.new(server_ips.sample, server_port)
+        client = server.accept
+        Thread.new {
+          handle_tcp.call(client, remote_socket)
+          client.close
+          remote_socket.close
+        }
+
+      puts Thread.list.size
+      rescue Exception => e
+        puts e
+      end
+    end
+
   end
 end
+
+
